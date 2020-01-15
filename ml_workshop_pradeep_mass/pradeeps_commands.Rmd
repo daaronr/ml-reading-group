@@ -1,0 +1,606 @@
+---
+title: "pradeep_examples"
+author: "David Reinstein"
+date: "1/13/2020"
+output: html_document
+---
+
+```{r packages, include=FALSE}
+install.packages(c("MASS", "gbm", "glmnet", "leaps", "randomForest", "tree"))
+
+library(here)
+#library(checkpoint) #to avoid differential processing from different package versions
+library(pacman)
+
+here <- here::here
+
+p_load(dplyr,magrittr,purrr,tidyverse,tidyr,broom,janitor,here,glue,dataMaid,glue,readr, lubridate,summarytools,gtools,knitr,pastecs,data.table, MASS, gbm, glmnet, leaps, randomForest)   #citr, reporttools, experiment, estimatr,  kableExtra, ggsignif, glmnet, glmnetUtils, rsample,snakecase,zoo
+library(codebook)
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Beginning of workshop 13 Jan 2020 -- David Reinstein tried to get people to install hypothes.is to share our comments and questions on the papers. 
+
+'Tree' above seems to need separate download; not installing for 5.0 or 5.1 ... force install?
+
+# Methods 
+
+Regression based ... 
+
+Tree based ...
+
+# Basics 
+
+- no one method dominates ... selecting the best method is the most challenging part of ML
+
+How close are the assumptions of the method to the dgp?
+
+MSE is a common metric for accuracy
+
+Today we focus on  XXX 'regression problem'
+
+Training MSE
+Test MSE
+
+We would like to select a model with the smallest test MSE
+
+
+---
+
+
+$$y = f(x) + e$$ ... we want to find the function f. 
+
+We get to a function $\hat{f}$
+
+
+We want to predict the *function* part, not the 'error term in the sample'. 
+
+
+# Bias-variance tradeoff
+
+the 'e' will aloways be there... we cannot get rid of that
+
+
+$$E[y_0-\hat{f}(x_0)]=...$$
+
+'Variance' ... if my data changes (another random sample)... how much will my function $f$ change?
+
+More flexible methods generally have a higher variance; particularly problematic with small data sets
+
+Bias is introduced by approximating a complicaed problem by a much simpler model
+
+In making a model more flexible we reduce bias and increase variance... latter outstrips the former after a certain point.
+
+DR: Once we have attained the complexxity of the full model the bias should mo longer continue to decrease 
+
+leads to a 'u-shape' of test error
+
+# Setting up stuff
+## Libraries
+
+
+```{r setup}
+
+rm(list=ls())
+
+library(MASS)
+library(leaps)
+library(glmnet)
+library(tree)
+library(randomForest)
+library(gbm)
+
+```
+
+## attaching the data
+```{r}
+
+attach(Boston)
+```
+
+## Data set description
+```{r}
+dim(Boston)
+summary(Boston)
+```
+
+
+## Data cleaning 
+```{r}
+
+# converting chas to a qualitative variable
+Boston$chas <- as.factor(chas)
+```
+
+
+## Training and Test data
+
+```{r}
+
+set.seed(123)
+train <- sample(1:nrow(Boston), nrow(Boston)/2)
+
+Boston.train <- Boston[train,]
+Boston.test <- Boston[-train,]
+```
+
+
+# Least Squares Model
+```{r}
+
+lm.fit <- lm(medv ~ ., data=Boston.train)
+summary(lm.fit)
+```
+
+
+## Out of sample performance
+```{r}
+
+lm.pred <- predict(lm.fit,newdata = Boston.test)
+(lm.test.mse <- mean((lm.pred - Boston.test$medv)^2))
+sqrt(lm.test.mse) # Residual standard error
+
+tss <- sum((mean(Boston.test$medv) - Boston.test$medv)^2) 
+lm.rss <- sum((lm.pred - Boston.test$medv)^2) 
+(lm.test.r2 <- 1 - lm.rss/tss)
+
+```
+
+# Forward Stepwise Selection
+
+- ... add 1 variable at a time, choose the one variable that  increases the R-sq the most
+
+- now do the same among the the remaining variables .... 
+best '1 variable model', '2 variable model' ... etc
+
+- Select among these using cross-validated prediction error, AIC, BIC, or adjusted R-sq
+
+Note -- this does *not* choose the best model in each category because of path dependence
+
+```{r}
+set.seed(123)
+reg.fwd <- regsubsets(medv ~ ., data = Boston.train, nvmax = 13, method = "forward")
+reg.summary.fwd <- summary(reg.fwd)
+reg.summary.fwd
+
+```
+
+
+## Choosing between models of different sizes
+
+```{r}
+
+par(mfrow = c(2, 2))
+##what is this??
+```
+
+
+### AIC or Cp
+
+```{r}
+
+plot(reg.summary.fwd$cp, xlab = "No. of variables", ylab = "Cp/AIC", type = "l")
+
+points(which.min(reg.summary.fwd$cp), reg.summary.fwd$cp[which.min(reg.summary.fwd$cp)], col = "red", cex = 2, pch = 20)
+
+```
+
+
+### BIC  
+
+```{r}
+
+plot(reg.summary.fwd$bic, xlab = "No. of variables", ylab = "BIC", type = "l")
+
+points(which.min(reg.summary.fwd$bic), reg.summary.fwd$bic[which.min(reg.summary.fwd$bic)], col = "red", cex = 2, pch = 20)
+
+```
+
+### Adj - R2
+```{r}
+plot(reg.summary.fwd$adjr2, xlab = "No. of variables", ylab = "Adj. R2", type = "l")
+points(which.max(reg.summary.fwd$adjr2), reg.summary.fwd$adjr2[which.max(reg.summary.fwd$adjr2)], col = "red", cex = 2, pch = 20)
+
+```
+
+## Using test set
+
+```{r}
+test.mat <- model.matrix(medv~., data=Boston.test) # X variables of the test data
+
+fwd.test.error=rep(NA,13)
+
+fwd.test.rss=rep(NA,13)
+
+for (i in 1:13){
+  coefi=coef(reg.fwd,id=i)
+  pred=test.mat[,names(coefi)] %*% coefi
+  fwd.test.error[i]=mean((Boston.test$medv - pred)^2)
+  fwd.test.rss[i]=sum((Boston.test$medv - pred)^2)
+}
+
+plot(fwd.test.error, xlab = "No. of variables", ylab = "Test MSE", type = "l")
+points(which.min(fwd.test.error), fwd.test.error[which.min(fwd.test.error)], col = "red", cex = 2, pch = 20)
+
+fwd.test.mse <- fwd.test.error[which.min(fwd.test.error)]
+fwd.test.r2 <- 1 - fwd.test.rss[which.min(fwd.test.error)]/tss
+```
+
+
+# Explanation of Lasso and ridge 'penalisation' or 'regularisation' or 'shrinkage' model here
+
+The picture of the given constraint ... a diamond versus an ellipse
+
+Thinking of it as maximisation wrt a 'budget constraint'
+
+# LASSO model
+
+```{r}
+
+train.X <- model.matrix(medv ~ ., data = Boston.train)
+test.X <- model.matrix(medv ~ ., data = Boston.test)
+train.Y <- Boston.train[,'medv']
+test.Y <- Boston.test[,'medv']
+
+
+```
+
+
+```{r}
+set.seed(123)
+lasso.fit <- glmnet(train.X, train.Y, alpha = 1)
+par(mfrow = c(1, 1))
+plot(lasso.fit,label = TRUE)
+
+```
+
+
+## Tuning the LASSO model - cross-validation
+
+Pradeep: think of cross-validation as an approximation of the test error.
+
+```{r}
+
+set.seed(123)
+cv.out <- cv.glmnet(train.X, train.Y, alpha = 1)
+plot(cv.out)
+
+```
+
+
+### Model with least CV error
+
+
+SUPER IMPORTANT:
+```{r}
+bestlam1 <- cv.out$lambda.min
+bestlam1
+```
+
+### Most shrunken model within 1 std. error of the min CV error
+```{r}
+bestlam2 <- cv.out$lambda.1se
+bestlam2
+```
+
+Why do we care about this? Some useful information in a more parsimonious model that is nearly as good. (??? seems like an incomplete argument)
+
+### coefficients of both models
+
+```{r}
+
+predict(lasso.fit,type="coefficients",s=bestlam1)
+predict(lasso.fit,type="coefficients",s=bestlam2)
+```
+
+## Prediction performance on test data
+```{r}
+lasso.pred1 <- predict(lasso.fit, s = bestlam1, newx = test.X)
+lasso.pred2 <- predict(lasso.fit, s = bestlam2, newx = test.X)
+
+lasso1.mse <- mean((lasso.pred1 - test.Y)^2) 
+lasso2.mse <- mean((lasso.pred2 - test.Y)^2) 
+
+lasso1.rss <- sum((lasso.pred1 - test.Y)^2) 
+lasso2.rss <- sum((lasso.pred2 - test.Y)^2) 
+
+lasso1.test.r2 <- 1 - lasso1.rss/tss
+lasso2.test.r2 <- 1 - lasso2.rss/tss
+```
+
+# Ridge model
+```{r}
+set.seed(123)
+ridge.fit <- glmnet(train.X, train.Y, alpha = 0)
+plot(ridge.fit,label = TRUE)
+```
+
+## Tuning the model - cross-validation
+```{r}
+
+set.seed(123)
+cv.out.ridge <- cv.glmnet(train.X, train.Y, alpha = 0)
+plot(cv.out.ridge)
+
+# Model with least CV error
+bestlam.ridge <- cv.out.ridge$lambda.min
+bestlam.ridge
+
+predict(ridge.fit,type="coefficients",s=bestlam.ridge)
+
+ridge.pred <- predict(ridge.fit, s = bestlam.ridge, newx = test.X)
+
+
+```
+
+## Prediction performance
+
+
+```{r}
+# Test MSE
+ridge.mse <- mean((ridge.pred - test.Y)^2) 
+
+# Test R2
+ridge.rss <- sum((ridge.pred - test.Y)^2) 
+ridge.test.r2 <- 1 - ridge.rss/tss
+
+```
+
+
+# Regression tree model
+- Segments the predictor space into simple regions
+- Mean of training obs in a given region used for prediction
+
+Best split made for each step without looking ahead
+
+Selects both the predictor and the cutpoint that reduces RSS the most
+
+
+Note that it has certain parameters (set where?) so that it will stop breaking a category down further once there is less than a 1 percent reduction in RSS or less than 30 in a category 
+
+
+```{r}
+set.seed(123)
+regtree.fit  <- tree(medv ~ ., data = Boston.train)
+summary(regtree.fit )
+plot(regtree.fit, text ) # to plot tree structure
+text(regtree.fit , pretty = 0) # to plot the node labels
+
+regtree.pred  <- predict(regtree.fit, newdata = Boston.test)
+(regtree.mse <- mean((regtree.pred - Boston.test$medv)^2))
+```
+
+## Test R2
+```{r}
+regtree.rss <- sum((regtree.pred - Boston.test$medv)^2) 
+(regtree.test.r2 <- 1 - regtree.rss/tss)
+```
+
+## Tuning (Pruning) the tree - to find the optimal level of complexity (with cross-validation)
+
+```{r}
+set.seed(123)
+cv.fit <- cv.tree(regtree.fit) 
+cv.fit 
+par(mfrow=c(1,2))
+plot(cv.fit$size, cv.fit$dev, type = "b") 
+
+# tree- pruning  
+prune.fit <- prune.tree(regtree.fit,best = 8)
+plot(prune.fit)
+text(prune.fit,pretty=0)
+
+```
+
+# Bagging and Random Forest models
+
+Idea: Regression trees have high variabce
+
+Boostrap aggregation 'Bagging' ... reducing variance of any ML method 
+
+Variance of the mean of random draws is lower variance than that of a single tree.
+
+We draw a random bootsrapped training sample each time, fit this thing, and then average these.
+
+
+## Random forest
+
+....  goes further than this by 'de-correlating the trees'; randomly sample some of the variables, don't use them all.
+
+
+Take many training data sets 
+```{r}
+
+set.seed(123)
+bagging.fit <- randomForest(medv ~ ., data = Boston.train, mtry = 13, importance = TRUE)
+
+
+bagging.fit
+bagging.pred <- predict(bagging.fit, newdata = Boston.test)
+(bagging.mse <- mean((bagging.pred  - test.Y)^2))
+```
+
+Note that if you chose a subset `mtry<13` you are doing random forest
+
+
+Questions: 
+
+- Can't we do bagging for other procedures as well? 
+- Can we cross-validate over multiple parameters at the same time? 
+  - Pradeep: Yes, Mullanaithian have a code example of this ... with a loop
+
+# Test R2
+```{r}
+
+bagging.rss <- sum((bagging.pred  - test.Y)^2)  
+(bagging.test.r2 <- 1 - bagging.rss/tss)
+```
+
+## Varying the number of variables to be considered at each node
+
+(not cross-validating, doing this on the TEST data)
+
+```{r}
+
+set.seed(123)
+rf.test.error=rep(NA,13)
+rf.test.rss=rep(NA,13)
+for (i in 1:13){
+  rf.fit <- randomForest(medv ~ ., data = Boston.train, mtry = i, importance = TRUE)
+  pred=predict(rf.fit, newdata = Boston.test)
+  rf.test.error[i]=mean((Boston.test$medv - pred)^2)
+  rf.test.rss[i]=sum((Boston.test$medv - pred)^2)
+}
+rf.test.error
+which.min(rf.test.error)
+rf.test.mse <- rf.test.error[which.min(rf.test.error)]
+(rf.test.r2 <- 1 - rf.test.rss[which.min(rf.test.error)]/tss)
+```
+
+Importance of each branch:
+
+```{r}
+
+rf5.fit <- randomForest(medv ~ ., data = Boston.train, mtry = 5, importance = TRUE)
+
+rf5.fit$importance
+varImpPlot(rf5.fit)
+```
+
+# Boosting model
+
+Boosting 'grows trees sequentially' ... it's a 'slow learning process'. 
+
+(?also path-dependent?)
+
+Iterate:
+
+- Fit a tree with d splits to the training data
+- update the overall function with a shrunken (by $\lambda$) version of the new tree
+- update the *residuals* with this new function
+- now do this again fitting a tree based on the residuals component
+
+Then output the 'boosted model'
+
+**There are three tuning parameters!:**
+
+1. B: Number of trees (can overfit if this is too large)
+2. Shrinkage parameter $\lambda$ controlling the rate of learning; somehow this is tied to B; we tune only one of these
+3. Number of splits $d$ in each tree; complexity of boosted trees; d=1 or d=2 are common
+
+```{r}
+
+set.seed(123)
+boost.fit <- gbm(medv~.,data = Boston.train, distribution = "gaussian",n.trees = 5000,interaction.depth = 4, shrinkage = 0.01)
+summary(boost.fit)
+
+```
+
+### partial dependence plots
+```{r}
+
+par(mfrow=c(1,2))
+plot(boost.fit,i="rm")
+plot(boost.fit,i="lstat")
+
+```
+
+## Tuning the boosting model with *two* parameters 
+
+(We should do this with cross-validation but it took too long. Can we recover the code?)
+
+```{r}
+s  <- 10^seq(-1, -3, length = 10)
+boost.test.error=matrix(data=NA,nrow=5,ncol=10)
+boost.test.rss=matrix(data=NA,nrow=5,ncol=10)
+set.seed(123)
+
+
+for (i in 1:5) {
+  for (j in 1:10){
+boosting <- gbm(medv~.,data = Boston.train, distribution = "gaussian",n.trees = 5000,interaction.depth = i, shrinkage = s[j])
+pred <- predict(boosting, newdata=Boston.test,n.trees = 5000)    
+boost.test.error[i,j]=mean((Boston.test$medv - pred)^2)
+boost.test.rss[i,j]=sum((Boston.test$medv - pred)^2)    
+  }
+} 
+
+```
+
+## Test error and out of sample R2
+```{r}
+
+boost.test.mse <- min(boost.test.error)
+loc <- which(boost.test.error == boost.test.mse,arr.ind = TRUE)
+boost.test.r2 <- 1 - boost.test.rss[loc]/tss
+```
+
+# Creating Table to compare everything
+
+```{r}
+
+test.mse <- c(lm.test.mse,fwd.test.mse,lasso1.mse,ridge.mse,regtree.mse,bagging.mse,rf.test.mse,boost.test.mse)
+test.r2 <- c(lm.test.r2,fwd.test.r2,lasso1.test.r2,ridge.test.r2,regtree.test.r2,bagging.test.r2,rf.test.r2,boost.test.r2)
+outofsample <- matrix(c(test.mse,test.r2),ncol = 2)
+rownames(outofsample) <- c("OLS", "Forward Stepwise" ,"Lasso", "Ridge", "Regression Tree", "Bagging", "Random Forest", "Boosting")
+colnames(outofsample) <- c("Test MSE", "Test R-sqr")
+outofsample
+```
+
+
+
+
+
+# Transform, split into testing and training 
+```{r}
+rm(list=ls())
+```
+
+```{r examine}
+dim(Boston)
+summary(Boston)
+
+```
+
+
+```{r transform}
+Boston$chas <- as.factor(Boston$chas)
+```
+
+
+```{r training-and-test-data}
+
+set.seed(123)
+train <- sample(1:nrow(Boston), nrow(Boston)/2)
+
+Boston.train <- Boston[train,]
+Boston.test <- Boston[-train,]
+
+```
+
+# Least squares model 
+
+```{r linear-model}
+
+lm.fit <- lm(medv ~ ., data=Boston.train)
+summary(lm.fit)
+```
+
+Out of sample performance 
+
+```{r oos_perf}
+
+lm.pred <- predict(lm.fit, newdata = Boston.test)
+lm.test.mse <- mean((lm.pred - Boston.test$medv)^2)
+sqrt(lm.test.mse) #residual standard error
+
+
+summary((Boston$medv)^2)
+
+tss <- sum(mean(Boston.test$medv - Boston$test$medv)^2)
+lm.rss <- sum(lm.pred - Boston.test$medv)
+lm.test.r2 <- 1- lm.rss/tss
+
+```
+
+
